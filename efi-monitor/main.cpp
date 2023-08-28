@@ -47,7 +47,24 @@ gST->ConOut->OutputString(gST->ConOut, private_text); \
 
 EFI_GUID gEfiLoadedImageProtocolGuid    = { 0x5B1B31A1, 0x9562, 0x11D2, { 0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B }};
 QWORD get_pe_entrypoint(QWORD base);
-inline void PressAnyKey();
+
+inline void PressAnyKey()
+{
+	EFI_STATUS         Status;
+	EFI_EVENT          WaitList;
+	EFI_INPUT_KEY      Key;
+	UINTN              Index;
+	Print(FILENAME L" " L"Press F11 key to continue . . .");
+	do {
+		WaitList = gST->ConIn->WaitForKey;
+		Status = gBS->WaitForEvent(1, &WaitList, &Index);
+		gST->ConIn->ReadKeyStroke(gST->ConIn, &Key);
+		if (Key.ScanCode == SCAN_F11)
+			break;
+	} while ( 1 );
+	gST->ConOut->ClearScreen(gST->ConOut);
+	gST->ConOut->SetAttribute(gST->ConOut, EFI_WHITE | EFI_BACKGROUND_BLACK);
+}
 
 extern "C" EFI_STATUS EFIAPI EfiMain(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable, EFI_LOADED_IMAGE_PROTOCOL *OldImage)
 {
@@ -55,41 +72,54 @@ extern "C" EFI_STATUS EFIAPI EfiMain(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TA
 	gBS = SystemTable->BootServices;
 	gST = SystemTable;
 
-	EFI_LOADED_IMAGE_PROTOCOL *LoadedImage;
-	if (EFI_ERROR(gBS->HandleProtocol(ImageHandle, &gEfiLoadedImageProtocolGuid, (void**)&LoadedImage)))
+	EFI_LOADED_IMAGE_PROTOCOL *current_image;
+
+
+	//
+	// we are running as EFI_APPLICATION. lets create new page for us and reboot
+	//
+	if (!EFI_ERROR(gBS->HandleProtocol(ImageHandle, &gEfiLoadedImageProtocolGuid, (void**)&current_image)))
 	{
-		LoadedImage = (EFI_LOADED_IMAGE*)ImageHandle;
-		for (QWORD i = OldImage->ImageSize; i--;)
-		{
-			((unsigned char*)OldImage->ImageSize)[i] = 0;
-		}
-	} else {
-		UINTN pages = EFI_SIZE_TO_PAGES (SIZE_4MB);
-		VOID* empty_rwx = 0;
-		if (EFI_ERROR(gBS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesCode, pages, (EFI_PHYSICAL_ADDRESS*)&empty_rwx)))
+		UINTN page_count = EFI_SIZE_TO_PAGES (SIZE_4MB);
+		VOID  *rwx       = 0;
+
+		if (EFI_ERROR(gBS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesCode, page_count, (EFI_PHYSICAL_ADDRESS*)&rwx)))
 		{
 			Print(FILENAME L" Failed to start " SERVICE_NAME L" service.");
 			return 0;
 		}
 
-		MemCopy(empty_rwx, LoadedImage->ImageBase, LoadedImage->ImageSize);
-		EFI_STATUS (EFIAPI *EntryPoint)(IN EFI_LOADED_IMAGE *LoadedImage, IN EFI_SYSTEM_TABLE *SystemTable, IN EFI_LOADED_IMAGE_PROTOCOL *OldImage);
-		*(QWORD*)&EntryPoint = (UINTN)(get_pe_entrypoint((QWORD)empty_rwx));
+		//
+		// copy currently loaded image to new section
+		//
+		MemCopy(rwx, current_image->ImageBase, current_image->ImageSize);
 
+		//
+		// resolve entry point address
+		//
+		EFI_STATUS (EFIAPI *EntryPoint)(IN EFI_LOADED_IMAGE *CurrentImage, IN EFI_SYSTEM_TABLE *SystemTable, IN EFI_LOADED_IMAGE_PROTOCOL *OldImage);
+		*(QWORD*)&EntryPoint = (UINTN)(get_pe_entrypoint((QWORD)rwx));
+
+		//
+		// jump to new memory
+		//
 		EFI_LOADED_IMAGE_PROTOCOL loaded_image2;
-		loaded_image2.ImageBase = (void *)empty_rwx;
-		loaded_image2.ImageSize = EFI_PAGES_TO_SIZE(pages);
-
-		return EntryPoint((EFI_LOADED_IMAGE*)&loaded_image2, SystemTable, LoadedImage);
+		loaded_image2.ImageBase = (void *)rwx;
+		loaded_image2.ImageSize = EFI_PAGES_TO_SIZE(page_count);
+		return EntryPoint((EFI_LOADED_IMAGE*)&loaded_image2, SystemTable, current_image);
 	}
 
-	EfiBaseAddress = (QWORD)LoadedImage->ImageBase;
-	EfiBaseSize = (QWORD)LoadedImage->ImageSize;
+	current_image = (EFI_LOADED_IMAGE*)ImageHandle;
+	EfiBaseAddress = (QWORD)current_image->ImageBase;
+	EfiBaseSize = (QWORD)current_image->ImageSize;
 
 	oExitBootServices = gBS->ExitBootServices;
 	gBS->ExitBootServices = ExitBootServicesHook;
 
-	Print(FILENAME L" " L"Please unplug (USB) now");
+	gST->ConOut->ClearScreen(gST->ConOut);
+	gST->ConOut->SetAttribute(gST->ConOut, EFI_WHITE | EFI_BACKGROUND_BLACK);
+
+	Print(FILENAME L" Please unplug (USB) now");
 	gST->ConOut->SetCursorPosition(gST->ConOut, 0, 1);
 
 	PressAnyKey();
@@ -330,24 +360,6 @@ BOOLEAN InitializeKernel(LOADER_PARAMETER_BLOCK *LoaderParameterBlock)
 
 	QWORD hooks = get_virtual_address((VOID*)hooks::initialize);
 	return ((BOOLEAN(*)(void))(hooks))();
-}
-
-inline void PressAnyKey()
-{
-	EFI_STATUS         Status;
-	EFI_EVENT          WaitList;
-	EFI_INPUT_KEY      Key;
-	UINTN              Index;
-	Print(FILENAME L" " L"Press F11 key to continue . . .");
-	do {
-		WaitList = gST->ConIn->WaitForKey;
-		Status = gBS->WaitForEvent(1, &WaitList, &Index);
-		gST->ConIn->ReadKeyStroke(gST->ConIn, &Key);
-		if (Key.ScanCode == SCAN_F11)
-			break;
-	} while ( 1 );
-	gST->ConOut->ClearScreen(gST->ConOut);
-	gST->ConOut->SetAttribute(gST->ConOut, EFI_WHITE | EFI_BACKGROUND_BLACK);
 }
 
 extern "C" EFI_STATUS EFIAPI ExitBootServicesHook(EFI_HANDLE ImageHandle,UINTN MapKey)
