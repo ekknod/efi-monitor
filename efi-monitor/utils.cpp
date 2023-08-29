@@ -1,7 +1,23 @@
 #include <Windows.h>
+#include <intrin.h>
 #include "globals.h"
 
 typedef ULONG_PTR QWORD;
+
+void SwapMemory(QWORD BaseAddress, QWORD ImageSize, QWORD NewBase)
+{
+	INT32 current_location = (INT32)((QWORD)_ReturnAddress() - BaseAddress);
+
+	//
+	// copy currently loaded image to new section
+	//
+	MemCopy((void *)NewBase, (void *)BaseAddress, ImageSize);
+
+	//
+	// swap memory
+	//
+	*(QWORD*)(_AddressOfReturnAddress()) = NewBase + current_location;
+}
 
 QWORD get_winload_base(QWORD return_address)
 {

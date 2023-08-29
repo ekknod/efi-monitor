@@ -72,58 +72,78 @@ extern "C" EFI_STATUS EFIAPI EfiMain(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TA
 	gBS = SystemTable->BootServices;
 	gST = SystemTable;
 
+
 	EFI_LOADED_IMAGE_PROTOCOL *current_image;
 
 
 	//
-	// we are running as EFI_APPLICATION. lets create new page for us and reboot
+	// Get current image information
 	//
-	if (!EFI_ERROR(gBS->HandleProtocol(ImageHandle, &gEfiLoadedImageProtocolGuid, (void**)&current_image)))
+	if (EFI_ERROR(gBS->HandleProtocol(ImageHandle, &gEfiLoadedImageProtocolGuid, (void**)&current_image)))
 	{
-		UINTN page_count = EFI_SIZE_TO_PAGES (SIZE_4MB);
-		VOID  *rwx       = 0;
-
-		if (EFI_ERROR(gBS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesCode, page_count, (EFI_PHYSICAL_ADDRESS*)&rwx)))
-		{
-			Print(FILENAME L" Failed to start " SERVICE_NAME L" service.");
-			return 0;
-		}
-
-		//
-		// copy currently loaded image to new section
-		//
-		MemCopy(rwx, current_image->ImageBase, current_image->ImageSize);
-
-		//
-		// resolve entry point address
-		//
-		EFI_STATUS (EFIAPI *EntryPoint)(IN EFI_LOADED_IMAGE *CurrentImage, IN EFI_SYSTEM_TABLE *SystemTable, IN EFI_LOADED_IMAGE_PROTOCOL *OldImage);
-		*(QWORD*)&EntryPoint = (UINTN)(get_pe_entrypoint((QWORD)rwx));
-
-		//
-		// jump to new memory
-		//
-		EFI_LOADED_IMAGE_PROTOCOL loaded_image2;
-		loaded_image2.ImageBase = (void *)rwx;
-		loaded_image2.ImageSize = EFI_PAGES_TO_SIZE(page_count);
-		return EntryPoint((EFI_LOADED_IMAGE*)&loaded_image2, SystemTable, current_image);
+		Print(FILENAME L" Failed to start " SERVICE_NAME L" service.");
+		return 0;
 	}
 
-	current_image = (EFI_LOADED_IMAGE*)ImageHandle;
-	EfiBaseAddress = (QWORD)current_image->ImageBase;
-	EfiBaseSize = (QWORD)current_image->ImageSize;
 
+	UINTN page_count = EFI_SIZE_TO_PAGES (SIZE_4MB);
+	VOID  *rwx       = 0;
+
+
+	//
+	// allocate space for SwapMemory
+	//
+	if (EFI_ERROR(gBS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesCode, page_count, (EFI_PHYSICAL_ADDRESS*)&rwx)))
+	{
+		Print(FILENAME L" Failed to start " SERVICE_NAME L" service.");
+		return 0;
+	}
+
+
+	//
+	// swap our context to new memory region
+	//
+	SwapMemory( (QWORD)current_image->ImageBase, (QWORD)current_image->ImageSize, (QWORD)rwx );
+
+
+	//
+	// clear old image from memory
+	//
+	for (QWORD i = current_image->ImageSize; i--;)
+	{
+		((unsigned char*)current_image->ImageBase)[i] = 0;
+	}
+
+
+	//
+	// save our new EFI address information
+	//
+	EfiBaseAddress = (QWORD)rwx;
+	EfiBaseSize    = (QWORD)current_image->ImageSize;
+
+
+	//
+	// clear headers
+	//
+	for (QWORD i = 0x200; i--;)
+	{
+		((unsigned char*)EfiBaseAddress)[i] = 0;
+	}
+
+
+	//
+	// hook ExitBootServices
+	//
 	oExitBootServices = gBS->ExitBootServices;
 	gBS->ExitBootServices = ExitBootServicesHook;
 
 	gST->ConOut->ClearScreen(gST->ConOut);
 	gST->ConOut->SetAttribute(gST->ConOut, EFI_WHITE | EFI_BACKGROUND_BLACK);
 
-	Print(FILENAME L" Please unplug (USB) now");
+
+	Print(FILENAME L" " SERVICE_NAME L" is now started");
 	gST->ConOut->SetCursorPosition(gST->ConOut, 0, 1);
-
 	PressAnyKey();
-
 	return EFI_SUCCESS;
 }
 
