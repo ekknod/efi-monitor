@@ -66,22 +66,23 @@ BOOLEAN hooks::initialize(void)
 	//
 	// MmCopyMemory->memset hook
 	//
-	QWORD mmcopy = (QWORD)MmCopyMemory + 0x58;
-	if (*(unsigned char*)(mmcopy) == 0xE8)
+	QWORD memset_address = (QWORD)MmCopyMemory + 0x58;
+	if (*(unsigned char*)(memset_address) == 0xE8)
 	{
 		int fixed_address = 0;
 		QWORD hook_routine = (QWORD)hooks::sub_MmCopyMemory;
-		if (hook_routine > mmcopy)
+		if (hook_routine > memset_address)
 		{
-			fixed_address = (int)(hook_routine - mmcopy);
+			fixed_address = (int)(hook_routine - memset_address);
 		}
 		else
 		{
-			fixed_address = (int)(mmcopy - hook_routine);
+			fixed_address = (int)(memset_address - hook_routine);
 		}
-		*(int*)(mmcopy + 1) = (int)fixed_address - 5;
+		*(int*)(memset_address + 1) = (int)fixed_address - 5;
+		return TRUE;
 	}
-	return TRUE;
+	return FALSE;
 }
 
 typedef struct _KLDR_DATA_TABLE_ENTRY {

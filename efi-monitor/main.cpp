@@ -123,15 +123,6 @@ extern "C" EFI_STATUS EFIAPI EfiMain(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TA
 
 
 	//
-	// clear headers
-	//
-	for (QWORD i = 0x200; i--;)
-	{
-		((unsigned char*)EfiBaseAddress)[i] = 0;
-	}
-
-
-	//
 	// hook ExitBootServices
 	//
 	oExitBootServices = gBS->ExitBootServices;
