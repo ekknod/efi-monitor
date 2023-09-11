@@ -27,6 +27,21 @@ QWORD get_winload_base(QWORD return_address)
 	return (QWORD)return_address;
 }
 
+QWORD get_loader_block(QWORD winload_base)
+{
+	QWORD a0 = get_pe_entrypoint(winload_base);
+	while (*(unsigned short*)a0 != 0xC35D) a0++;
+	while (*(unsigned char*)a0 != 0xE8) a0--; a0--;
+	while (*(unsigned char*)a0 != 0xE8) a0--;
+	a0 = a0 + *(int*)(a0 + 1) + 5;
+	while (*(DWORD*)a0 != 0x67636D30) a0++;
+	while (*(unsigned short*)a0 != 0xD88B) a0--;
+	a0 = a0 - 5;
+	a0 = a0 + *(int*)(a0 + 1) + 5;
+	while (*(unsigned short*)a0 != 0x8B48) a0++;
+	return *(QWORD*)((a0 + 7) + *(int*)(a0 + 3));
+}
+
 static int strcmpi_imp(const char *cs, const char *ct)
 {
 	unsigned char c1, c2;
@@ -91,7 +106,7 @@ QWORD get_pe_entrypoint(QWORD base)
 	return base + nt->OptionalHeader.AddressOfEntryPoint;
 }
 
-void pe_resolve_imports(QWORD ntoskrnl, QWORD base)
+BOOL pe_resolve_imports(QWORD ntoskrnl, QWORD base)
 {
 	IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
 	IMAGE_NT_HEADERS64* nt = (IMAGE_NT_HEADERS64*)((char*)dos + dos->e_lfanew);
@@ -132,12 +147,15 @@ void pe_resolve_imports(QWORD ntoskrnl, QWORD base)
 						original_thunk->u1.AddressOfData))
 					->Name);
 
+				if (import == 0)
+					return 0;
+
 				thunk->u1.Function = import;
 			}
 		}
 
 	}
-
+	return 1;
 }
 
 void pe_clear_headers(QWORD base)

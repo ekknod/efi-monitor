@@ -60,29 +60,18 @@ void *  __cdecl hooks::sub_MmCopyMemory(void * _Dst, int _Val, QWORD _Size, ULON
 	return memset(_Dst, _Val, _Size);
 }
 
+int get_relative_address(QWORD hook, QWORD target)
+{
+	return (hook > target ? (int)(hook - target) : (int)(target - hook)) - 5;
+}
+
 BOOLEAN hooks::initialize(void)
 {
+	QWORD memset_address = (QWORD)MmCopyMemory;
+	while (*(unsigned char*)memset_address != 0xE8) memset_address++;
+	*(int*)(memset_address + 1) = get_relative_address( (QWORD)hooks::sub_MmCopyMemory, (QWORD)memset_address );
 
-	//
-	// MmCopyMemory->memset hook
-	//
-	QWORD memset_address = (QWORD)MmCopyMemory + 0x58;
-	if (*(unsigned char*)(memset_address) == 0xE8)
-	{
-		int fixed_address = 0;
-		QWORD hook_routine = (QWORD)hooks::sub_MmCopyMemory;
-		if (hook_routine > memset_address)
-		{
-			fixed_address = (int)(hook_routine - memset_address);
-		}
-		else
-		{
-			fixed_address = (int)(memset_address - hook_routine);
-		}
-		*(int*)(memset_address + 1) = (int)fixed_address - 5;
-		return TRUE;
-	}
-	return FALSE;
+	return TRUE;
 }
 
 typedef struct _KLDR_DATA_TABLE_ENTRY {
