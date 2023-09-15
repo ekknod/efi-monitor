@@ -60,17 +60,35 @@ void *  __cdecl hooks::sub_MmCopyMemory(void * _Dst, int _Val, QWORD _Size, ULON
 	return memset(_Dst, _Val, _Size);
 }
 
-int get_relative_address(QWORD hook, QWORD target)
+int get_relative_address_offset(QWORD hook, QWORD target)
 {
 	return (hook > target ? (int)(hook - target) : (int)(target - hook)) - 5;
+}
+
+int get_relative_address_offset2(QWORD hook, QWORD target)
+{
+	return (hook < target ? (int)(hook - target) : (int)(target - hook)) - 5;
+}
+
+inline QWORD get_relative_address(QWORD instruction, DWORD offset, DWORD instruction_size)
+{
+	INT32 rip_address = *(INT32*)(instruction + offset);
+	return (QWORD)(instruction + instruction_size + rip_address);
 }
 
 BOOLEAN hooks::initialize(void)
 {
 	QWORD memset_address = (QWORD)MmCopyMemory;
 	while (*(unsigned char*)memset_address != 0xE8) memset_address++;
-	*(int*)(memset_address + 1) = get_relative_address( (QWORD)hooks::sub_MmCopyMemory, (QWORD)memset_address );
-
+	*(int*)(memset_address + 1) = get_relative_address_offset((QWORD)hooks::sub_MmCopyMemory, (QWORD)memset_address);
+	if (get_relative_address(memset_address, 1, 5) != (QWORD)hooks::sub_MmCopyMemory)
+	{
+		*(int*)(memset_address + 1) = get_relative_address_offset2((QWORD)hooks::sub_MmCopyMemory, (QWORD)memset_address);
+		if (get_relative_address(memset_address, 1, 5) != (QWORD)hooks::sub_MmCopyMemory)
+		{
+			return 0;
+		}
+	}
 	return TRUE;
 }
 
@@ -107,3 +125,4 @@ PCWSTR GetCallerModuleName(QWORD address)
 	}
 	return L"unknown";
 }
+
