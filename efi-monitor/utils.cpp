@@ -309,7 +309,7 @@ static QWORD strleni(const char *s)
 	return sc - s;
 }
 
-static void *FindPatternEx(unsigned char* base, QWORD size, unsigned char* pattern, unsigned char* mask)
+void *FindPatternEx(unsigned char* base, QWORD size, unsigned char* pattern, unsigned char* mask)
 {
 	size -= strleni((const char *)mask);
 	for (QWORD i = 0; i <= size; ++i) {

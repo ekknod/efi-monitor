@@ -19,6 +19,7 @@ int wcscmp_imp(const wchar_t *cs, const wchar_t *ct);
 
 QWORD GetModuleEntry(LIST_ENTRY* entry, const unsigned short *name);
 QWORD FindPattern(QWORD base, unsigned char* pattern, unsigned char* mask);
+void  *FindPatternEx(unsigned char* base, QWORD size, unsigned char* pattern, unsigned char* mask);
 
 
 
